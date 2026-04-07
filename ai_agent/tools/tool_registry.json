@@ -1,0 +1,88 @@
+{
+  "tools": [
+    {
+      "name": "query_used_cars_data",
+      "description": "Executes a SQL SELECT query on the used cars dataset stored in Supabase. Use this tool for retrieving raw or aggregated data directly from the database.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "sql_query": {
+            "type": "string",
+            "description": "A valid SQL SELECT query targeting the used_cars table"
+          }
+        },
+        "required": ["sql_query"]
+      },
+      "constraints": [
+        "ONLY SELECT queries are allowed",
+        "Do NOT use INSERT, UPDATE, DELETE, or DROP",
+        "Limit results to a maximum of 100 rows unless using aggregation",
+        "Only use valid columns: car_name, year, selling_price, present_price, kms_driven, fuel_type, transmission, seller_type, owner"
+      ],
+      "notes": [
+        "Prefer aggregation queries when answering analytical questions",
+        "Avoid selecting unnecessary columns"
+      ]
+    },
+    {
+      "name": "aggregate_used_car_data",
+      "description": "Performs aggregation operations such as average, minimum, maximum, and count on the dataset. Use this for analytical queries instead of writing raw SQL.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "metric": {
+            "type": "string",
+            "enum": ["avg", "min", "max", "count"],
+            "description": "Aggregation function to apply"
+          },
+          "column": {
+            "type": "string",
+            "description": "Column to aggregate (e.g., selling_price)"
+          },
+          "group_by": {
+            "type": "string",
+            "description": "Column to group results by (optional)"
+          },
+          "filters": {
+            "type": "object",
+            "description": "Optional filters (e.g., fuel_type: diesel)"
+          }
+        },
+        "required": ["metric", "column"]
+      },
+      "constraints": [
+        "Column must exist in dataset",
+        "Group_by must be a valid categorical column",
+        "Filters must match valid column names"
+      ],
+      "notes": [
+        "Use this tool instead of raw SQL when possible",
+        "Improves reliability and reduces errors"
+      ]
+    },
+    {
+      "name": "search_web",
+      "description": "Searches the internet for external information such as market trends, pricing factors, and general explanations. Use ONLY when the question cannot be answered from the dataset.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Search query describing the information needed"
+          }
+        },
+        "required": ["query"]
+      },
+      "constraints": [
+        "Use ONLY for external knowledge or explanations",
+        "Do NOT use for questions that can be answered using the dataset",
+        "Prefer database tools when data is available internally",
+        "Do not make assumptions without evidence from results"
+      ],
+      "notes": [
+        "Useful for 'why' questions and industry insights",
+        "Can be used after database queries to enrich explanations"
+      ]
+    }
+  ]
+}
