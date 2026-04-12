@@ -43,10 +43,27 @@ def query_used_cars_data(columns, distinct=False, filters=None, limit=50):
                     query_builder = query_builder.lt(col, v)
                 elif op == "gt":
                     query_builder = query_builder.gt(col, v)
+                elif op == "lte":
+                    query_builder = query_builder.lte(col, v)
+                elif op == "gte":
+                    query_builder = query_builder.gte(col, v)
                 elif op == "eq":
-                    query_builder = query_builder.eq(col, v)
+                    # case-insensitive match for strings
+                    if isinstance(v, str):
+                        query_builder = query_builder.ilike(col, v.strip())
+                    else:
+                        query_builder = query_builder.eq(col, v)
+                elif op == "neq":
+                    if isinstance(v, str):
+                        query_builder = query_builder.not_.ilike(col, v.strip())
+                    else:
+                        query_builder = query_builder.neq(col, v)
         else:
-            query_builder = query_builder.eq(col, val)
+            # case-insensitive match for strings
+            if isinstance(val, str):
+                query_builder = query_builder.ilike(col, val.strip())
+            else:
+                query_builder = query_builder.eq(col, val)
 
     # Apply limit
     query_builder = query_builder.limit(limit)
