@@ -10,6 +10,9 @@ load_dotenv()
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
+print("SUPABASE_URL:", SUPABASE_URL)
+print("SUPABASE_KEY (first 10 chars):", SUPABASE_KEY[:10] if SUPABASE_KEY else None)
+
 # Environment validation
 if not SUPABASE_URL or not SUPABASE_KEY:
     raise EnvironmentError("Missing SUPABASE_URL or SUPABASE_KEY in environment variables")
