@@ -7,6 +7,8 @@ from dotenv import load_dotenv
 import httpx
 from fastmcp import Client
 from ai_agent.memory_store import load_conversation, save_message, load_state, save_state
+from ai_agent.llm import call_llm
+from ai_agent.planner import Planner
 import uuid
 
 # -------------------------------
@@ -71,42 +73,7 @@ tool_mapping = {
     "web_search": web_search_tool
 }
 
-# -------------------------------
-# Call LLM via Groq API
-# -------------------------------
-async def call_llm(prompt: str, retries=5) -> str:  # increase retries
-    url = "https://api.groq.com/openai/v1/chat/completions"
-
-    headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json"
-    }
-
-    payload = {
-        "model": "llama-3.3-70b-versatile",
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 256  # reduce tokens to avoid large requests
-    }
-
-    for attempt in range(retries):
-        try:
-            async with httpx.AsyncClient(timeout=30) as client:
-                response = await client.post(url, headers=headers, json=payload)
-                response.raise_for_status()
-                result = response.json()
-                return result["choices"][0]["message"]["content"]
-
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 429:
-                wait_time = 2 ** attempt  # exponential backoff: 1,2,4,8,16s
-                print(f"Rate limited by Groq API, retrying in {wait_time}s...")
-                await asyncio.sleep(wait_time)
-            else:
-                raise
-
-        except httpx.RequestError as e:
-            print(f"Network error: {e}, retrying in 2s...")
-            await asyncio.sleep(2)
+# call_llm is provided by ai_agent.llm (kept as separate module for reuse)
             
 # -------------------------------
 # JSON extractor
@@ -162,6 +129,13 @@ async def agent_loop(
     steps = []
 
     save_message(session_id, "user", user_query)
+
+    # --- Planner: create an initial execution plan (incremental refactor)
+    try:
+        plan_doc = await Planner.create_plan(user_query, history, state)
+        print("[Planner] Execution plan:", json.dumps(plan_doc, indent=2))
+    except Exception as e:
+        print(f"[Planner] Failed to create plan: {e}")
 
     for step in range(max_steps):
 
