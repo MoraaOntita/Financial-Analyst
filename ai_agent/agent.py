@@ -73,6 +73,10 @@ tool_mapping = {
     "web_search": web_search_tool
 }
 
+# bring executor and cache here to orchestrate plan execution
+from ai_agent.executor import Executor
+from ai_agent.tool_cache import ToolCache
+
 # call_llm is provided by ai_agent.llm (kept as separate module for reuse)
             
 # -------------------------------
@@ -136,6 +140,15 @@ async def agent_loop(
         print("[Planner] Execution plan:", json.dumps(plan_doc, indent=2))
     except Exception as e:
         print(f"[Planner] Failed to create plan: {e}")
+
+    # --- Executor: run planned steps deterministically (one-by-one)
+    tool_cache = ToolCache()
+    executor = Executor(tool_mapping, tool_cache=tool_cache)
+    try:
+        exec_result = await executor.execute_plan(plan_doc, session_id, state)
+        print("[Executor] Completed steps:", json.dumps(exec_result.get("completed_steps", []), indent=2))
+    except Exception as e:
+        print(f"[Executor] Execution failed: {e}")
 
     for step in range(max_steps):
 
