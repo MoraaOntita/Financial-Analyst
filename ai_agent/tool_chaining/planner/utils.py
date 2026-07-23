@@ -11,6 +11,15 @@ import re
 from typing import Dict, Any
 
 
+def _strip_model_prefixes(text: str) -> str:
+    """Remove common assistant/tool wrapper prefixes before JSON parsing."""
+    cleaned = text.strip()
+    cleaned = re.sub(r"<\|python_tag\|>", "", cleaned)
+    cleaned = re.sub(r"<\|start_header_id\|>assistant<\|end_header_id\|>", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"<\|start_header_id\|>system<\|end_header_id\|>", "", cleaned, flags=re.IGNORECASE)
+    return cleaned.strip()
+
+
 def load_prompt() -> str:
     """
     Load the reasoning prompt from the prompts directory.

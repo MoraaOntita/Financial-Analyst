@@ -108,9 +108,58 @@ def summarize_result(result, max_items=10):
     return result
 
 
+def _extract_observations(completed_steps: list) -> list[dict]:
+    observations = []
+    for step in completed_steps:
+        observation = step.get("observation") or {}
+        final_answer = observation.get("final_answer")
+        if isinstance(final_answer, list):
+            observations.append({
+                "tool": step.get("tool"),
+                "purpose": step.get("purpose"),
+                "final_answer": final_answer,
+                "summary": step.get("text_summary"),
+            })
+    return observations
+
+
+def _format_answer_from_observations(user_query: str, observations: list[dict]) -> str:
+    if not observations:
+        return "I couldn’t find enough information to answer that request yet."
+
+    normalized = []
+    for observation in observations:
+        values = observation.get("final_answer") or []
+        if isinstance(values, list):
+            normalized.extend(values)
+
+    if not normalized:
+        return "I didn’t receive any usable data for that request."
+
+    answer_parts = []
+    for item in normalized:
+        if isinstance(item, dict):
+            if "selling_price" in item and isinstance(item.get("selling_price"), (int, float)):
+                answer_parts.append(f"selling price {item['selling_price']}")
+            if "car_name" in item:
+                car_name = item.get("car_name")
+                price = item.get("selling_price")
+                if car_name:
+                    if price is None:
+                        answer_parts.append(str(car_name))
+                    else:
+                        answer_parts.append(f"{car_name} at {price}")
+
+    if answer_parts:
+        return f"Here is the result: {'; '.join(answer_parts[:8])}."
+
+    return "Here is the result: " + str(normalized[:3])
+
+
 async def build_natural_language_answer(user_query: str, completed_steps: list) -> str:
-    """Turn executed tool steps into a concise natural-language answer."""
-    if not completed_steps:
+    """Build a grounded answer from the structured observations from executed steps."""
+    observations = _extract_observations(completed_steps)
+    if not observations:
         prompt = (
             "You are a helpful assistant. The user asked for information, but no tool steps were executed. "
             "Respond briefly and naturally, saying that no matching results were found or that you need a bit more detail.\n"
@@ -118,24 +167,8 @@ async def build_natural_language_answer(user_query: str, completed_steps: list) 
         )
         return await call_llm(prompt)
 
-    summaries = []
-    for step in completed_steps:
-        text_summary = step.get("text_summary")
-        if text_summary:
-            summaries.append(text_summary)
-
-    prompt = (
-        "You are a helpful assistant. Use the tool results below to answer the user's question in clear natural language. "
-        "Do not mention raw JSON, internal tool names, or technical details. Keep the answer concise and conversational.\n\n"
-        f"User question: {user_query}\n\n"
-        "Observed results:\n"
-        + "\n".join(f"- {summary}" for summary in summaries)
-    )
-
-    try:
-        return await call_llm(prompt)
-    except Exception:
-        return "I completed the request. " + " ".join(summaries)
+    answer = _format_answer_from_observations(user_query, observations)
+    return answer
 
 
 async def agent_loop(

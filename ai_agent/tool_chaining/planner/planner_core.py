@@ -188,7 +188,10 @@ class Planner:
         print(response_text)
         print("============================\n")
 
-        plan_json = extract_json(response_text)
+        try:
+            plan_json = extract_json(response_text)
+        except Exception:
+            plan_json = {"plan": []}
 
         print(">>> Parsed JSON:")
 
