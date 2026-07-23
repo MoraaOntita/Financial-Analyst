@@ -33,43 +33,31 @@ def load_prompt() -> str:
 
 
 def extract_json(text: str) -> Dict[str, Any]:
-    """
-    Extract JSON object from text response.
-    
-    Searches for the first complete JSON object in the text using regex.
-    Handles cases where LLM wraps JSON in markdown code blocks or explanatory text.
-    
-    Args:
-        text: Text response from LLM
-    
-    Returns:
-        Parsed JSON dictionary
-    
-    Raises:
-        ValueError: If no valid JSON found in text
-    """
+    text = text.strip()
 
+    # Remove Markdown code fences if present
+    if text.startswith("```"):
+        lines = text.splitlines()
 
-    def extract_json(text: str) -> Dict[str, Any]:
-        text = text.strip()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
 
-        # Remove Markdown code fences if present
-        if text.startswith("```"):
-            lines = text.splitlines()
-            if lines and lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines and lines[-1].startswith("```"):
-                lines = lines[:-1]
-            text = "\n".join(lines).strip()
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
 
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            pass
+        text = "\n".join(lines).strip()
 
-        match = re.search(r"\{[\s\S]*\}", text)
+    try:
+        return json.loads(text)
 
-        if not match:
-            raise ValueError(f"No JSON object found.\nLLM response:\n{text}")
+    except json.JSONDecodeError:
+        pass
 
-        return json.loads(match.group(0))
+    match = re.search(r"\{[\s\S]*\}", text)
+
+    if not match:
+        raise ValueError(
+            f"No JSON object found.\nLLM response:\n{text}"
+        )
+
+    return json.loads(match.group(0))
