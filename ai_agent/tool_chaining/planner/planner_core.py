@@ -6,6 +6,7 @@ using an LLM to reason about dependencies and tool choices.
 """
 
 import json
+import re
 from typing import Dict, Any, List, Optional
 
 from ...llm import call_llm
@@ -97,10 +98,17 @@ class Planner:
             if not isinstance(depends_on, list) or any(not isinstance(dep, int) for dep in depends_on):
                 raise ValueError(f"Step {step.get('step')} has invalid depends_on; expected a list of step numbers.")
 
+            step_number = step.get("step")
+            parameter_text = json.dumps(parameters, default=str)
+            referenced_dependencies = {
+                dep for dep in depends_on if dep > 0 and dep < step_number and re.search(rf"step_{dep}\.output", parameter_text)
+            }
+            cleaned_dependencies = sorted(referenced_dependencies)
+
             normalized_step = dict(step)
             normalized_step.setdefault("depends_on", [])
             normalized_step["parameters"] = parameters
-            normalized_step["depends_on"] = depends_on
+            normalized_step["depends_on"] = cleaned_dependencies
             validated_plan.append(normalized_step)
 
         return {"plan": validated_plan}
@@ -145,7 +153,10 @@ class Planner:
             "CRITICAL RULES:\n"
             "- Do NOT generate answer-only steps such as final_answer or response steps.\n"
             "- Do NOT create tool names outside the allowed list.\n"
-            "- If a step uses results from a previous step, it MUST declare depends_on.\n"
+            "- Use query for row retrieval and matching records.\n"
+            "- Use aggregate for averages, counts, minimums, maximums, totals, or grouping.\n"
+            "- Use web_search only for external explanations or information not available in the dataset.\n"
+            "- Only add depends_on when a later step actually uses the output of an earlier step. If a step is independent, leave depends_on as [].\n"
             "- If using previous results, reference them as: step_<n>.output.\n"
             "- Keep plans minimal and logically chained.\n"
             "- If the user request is conversational or does not require any tool, return an empty plan: {'plan': []}.\n\n"
@@ -154,9 +165,12 @@ class Planner:
             "User: Show me the average selling price by fuel type\n"
             "Output: {\"plan\": [{\"step\": 1, \"tool\": \"aggregate\", \"purpose\": \"Compute average selling price by fuel type\", \"parameters\": {\"metric\": \"avg\", \"column\": \"selling_price\", \"group_by\": \"fuel_type\"}, \"depends_on\": []}]}\n\n"
             "Example 2:\n"
+            "User: Compare diesel vs petrol average prices\n"
+            "Output: {\"plan\": [{\"step\": 1, \"tool\": \"aggregate\", \"purpose\": \"Compute average selling price for diesel cars\", \"parameters\": {\"metric\": \"avg\", \"column\": \"selling_price\", \"filters\": {\"fuel_type\": \"diesel\"}}, \"depends_on\": []}, {\"step\": 2, \"tool\": \"aggregate\", \"purpose\": \"Compute average selling price for petrol cars\", \"parameters\": {\"metric\": \"avg\", \"column\": \"selling_price\", \"filters\": {\"fuel_type\": \"petrol\"}}, \"depends_on\": []}]}\n\n"
+            "Example 3:\n"
             "User: Good morning, how are you?\n"
             "Output: {\"plan\": []}\n\n"
-            "Example 3:\n"
+            "Example 4:\n"
             "User: List some cars from the dataset\n"
             "Output: {\"plan\": [{\"step\": 1, \"tool\": \"query\", \"purpose\": \"Retrieve a sample of used cars\", \"parameters\": {\"columns\": [\"car_name\", \"selling_price\"], \"limit\": 10}, \"depends_on\": []}]}\n"
         )

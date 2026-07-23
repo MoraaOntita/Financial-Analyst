@@ -2,15 +2,15 @@
 import asyncio
 import json
 import os
-import re
 from dotenv import load_dotenv
-import httpx
-from fastmcp import Client
 from ai_agent.memory_store import load_conversation, save_message, load_state, save_state
 from ai_agent.tool_chaining.executor import Executor
 from ai_agent.tool_cache import ToolCache
 from ai_agent.llm import call_llm
 from ai_agent.tool_chaining.planner import Planner
+from ai_agent.tool_handlers.query import query_used_cars_data
+from ai_agent.tool_handlers.aggregation import aggregate_used_car_data
+from ai_agent.tool_handlers.web_search import search_web
 import uuid
 import traceback
 
@@ -23,7 +23,6 @@ env_path = Path(__file__).resolve().parent.parent / ".env"
 load_dotenv(env_path, override=True)
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-MCP_SERVER_URL = "http://127.0.0.1:8000/mcp"
 
 if not GROQ_API_KEY:
     raise ValueError("GROQ_API_KEY not loaded. Check your .env file.")
@@ -31,44 +30,31 @@ if not GROQ_API_KEY:
 print("DEBUG GROQ KEY:", GROQ_API_KEY[:10] if GROQ_API_KEY else None)
 
 # -------------------------------
-# Tool wrappers calling MCP server
+# Local tool adapters
 # -------------------------------
 async def query_tool(columns, distinct=False, filters=None, limit=50, order_by=None):
-    """
-    Calls the flexible query_used_cars_data tool with structured parameters.
-    """
-    async with Client(MCP_SERVER_URL) as client:
-        payload = {
-            "params": {
-                "columns": columns,
-                "distinct": distinct,
-                "filters": filters or {},
-                "limit": limit,
-                "order_by": order_by
-            }
-        }
-        result = await client.call_tool("query_used_cars_data", payload)
-        return result.data
+    """Adapter for the data query tool without exposing the underlying API."""
+    return query_used_cars_data(
+        columns=columns,
+        distinct=distinct,
+        filters=filters or {},
+        limit=limit,
+    )
+
 
 async def aggregation_tool(metric: str, column: str, group_by: str = None, filters: dict = None):
-    async with Client(MCP_SERVER_URL) as client:
-        result = await client.call_tool(
-            "aggregate_used_car_data",
-            {
-                "params": {
-                    "metric": metric,
-                    "column": column,
-                    "group_by": group_by,
-                    "filters": filters
-                }
-            }
-        )
-        return result.data
+    """Adapter for the aggregation tool without exposing the underlying API."""
+    return aggregate_used_car_data(
+        metric=metric,
+        column=column,
+        group_by=group_by,
+        filters=filters,
+    )
+
 
 async def web_search_tool(query: str):
-    async with Client(MCP_SERVER_URL) as client:
-        result = await client.call_tool("search_web", {"query": query})
-        return result.data
+    """Adapter for the web search tool without exposing the underlying API."""
+    return search_web(query=query)
 
 tool_mapping = {
     "query": query_tool,
@@ -120,6 +106,36 @@ def summarize_result(result, max_items=10):
         if "data" in result and isinstance(result["data"], list):
             return result["data"][:max_items]
     return result
+
+
+async def build_natural_language_answer(user_query: str, completed_steps: list) -> str:
+    """Turn executed tool steps into a concise natural-language answer."""
+    if not completed_steps:
+        prompt = (
+            "You are a helpful assistant. The user asked for information, but no tool steps were executed. "
+            "Respond briefly and naturally, saying that no matching results were found or that you need a bit more detail.\n"
+            f"User question: {user_query}"
+        )
+        return await call_llm(prompt)
+
+    summaries = []
+    for step in completed_steps:
+        text_summary = step.get("text_summary")
+        if text_summary:
+            summaries.append(text_summary)
+
+    prompt = (
+        "You are a helpful assistant. Use the tool results below to answer the user's question in clear natural language. "
+        "Do not mention raw JSON, internal tool names, or technical details. Keep the answer concise and conversational.\n\n"
+        f"User question: {user_query}\n\n"
+        "Observed results:\n"
+        + "\n".join(f"- {summary}" for summary in summaries)
+    )
+
+    try:
+        return await call_llm(prompt)
+    except Exception:
+        return "I completed the request. " + " ".join(summaries)
 
 
 async def agent_loop(
@@ -195,20 +211,7 @@ async def agent_loop(
     # -------------------------------------------------------
 
     completed_steps = exec_result.get("completed_steps", [])
-
-    # Try to find final answer from tool outputs (if any tool provides it)
-    final_answer = None
-
-    for step in completed_steps:
-        obs = step.get("observation")
-
-        if isinstance(obs, dict) and "final_answer" in obs:
-            final_answer = obs["final_answer"]
-            break
-
-    # fallback behavior
-    if not final_answer:
-        final_answer = "Execution completed. No explicit final answer was produced."
+    final_answer = await build_natural_language_answer(user_query, completed_steps)
 
     save_message(session_id, "assistant", final_answer)
 
