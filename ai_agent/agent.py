@@ -79,6 +79,33 @@ tool_mapping = {
 # call_llm is provided by ai_agent.llm (kept as separate module for reuse)
 
 
+def is_conversational_query(user_query: str) -> bool:
+    """Return True for simple conversational prompts that do not need tool use."""
+    text = (user_query or "").strip().lower()
+    if not text:
+        return False
+
+    conversational_phrases = [
+        "good morning",
+        "good afternoon",
+        "good evening",
+        "hello",
+        "hi",
+        "hey",
+        "how are you",
+        "how are you doing",
+        "how's it going",
+        "thanks",
+        "thank you",
+        "what's up",
+        "nice to meet you",
+        "bye",
+        "goodbye",
+    ]
+
+    return any(phrase in text for phrase in conversational_phrases)
+
+
 # -------------------------------
 # Multi-step reasoning loop with JSON validation
 # -------------------------------
@@ -113,11 +140,25 @@ async def agent_loop(
 
     save_message(session_id, "user", user_query)
 
+    if is_conversational_query(user_query):
+        prompt = (
+            "You are a helpful assistant. Respond naturally and briefly to the user's message.\n"
+            f"User message: {user_query}"
+        )
+        final_answer = await call_llm(prompt)
+        save_message(session_id, "assistant", final_answer)
+        return {"answer": final_answer, "steps": []}
+
     # --- Planner: create an initial execution plan
     try:
         print("\n>>> Calling Planner.create_plan()")
 
-        plan_doc = await Planner.create_plan(user_query, history, state)
+        plan_doc = await Planner.create_plan(
+            user_query,
+            history,
+            state,
+            allowed_tools=list(tool_mapping.keys()),
+        )
 
         print("\n>>> Planner returned:")
         print(json.dumps(plan_doc, indent=2))

@@ -48,11 +48,70 @@ class Planner:
     """
 
     @staticmethod
+    def validate_plan_payload(
+        plan_doc: Optional[Dict[str, Any]],
+        allowed_tools: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Validate the parsed plan shape and ensure tools are registered."""
+        if not isinstance(plan_doc, dict):
+            raise ValueError(f"Planner returned {type(plan_doc).__name__}, expected dict.")
+
+        if "plan" not in plan_doc:
+            raise ValueError(f"Planner JSON missing 'plan': {plan_doc}")
+
+        if not isinstance(plan_doc["plan"], list):
+            raise ValueError(f"'plan' should be a list, got {type(plan_doc['plan'])}")
+
+        allowed = {tool for tool in (allowed_tools or []) if isinstance(tool, str) and tool.strip()}
+        if not allowed:
+            allowed = {"query", "aggregate", "web_search"}
+
+        validated_plan: List[Dict[str, Any]] = []
+
+        for step in plan_doc["plan"]:
+            if not isinstance(step, dict):
+                raise ValueError("Each plan step must be an object.")
+
+            if not isinstance(step.get("step"), int):
+                raise ValueError("Each plan step must include an integer 'step'.")
+
+            tool_name = step.get("tool")
+            if not isinstance(tool_name, str) or not tool_name.strip():
+                raise ValueError(f"Step {step.get('step')} is missing a valid tool name.")
+
+            if tool_name not in allowed:
+                raise ValueError(
+                    f"Step {step.get('step')} uses unregistered tool '{tool_name}'. "
+                    f"Allowed tools: {sorted(allowed)}"
+                )
+
+            purpose = step.get("purpose")
+            if not isinstance(purpose, str) or not purpose.strip():
+                raise ValueError(f"Step {step.get('step')} is missing a valid purpose.")
+
+            parameters = step.get("parameters", {}) or {}
+            if not isinstance(parameters, dict):
+                raise ValueError(f"Step {step.get('step')} has invalid parameters; expected an object.")
+
+            depends_on = step.get("depends_on", []) or []
+            if not isinstance(depends_on, list) or any(not isinstance(dep, int) for dep in depends_on):
+                raise ValueError(f"Step {step.get('step')} has invalid depends_on; expected a list of step numbers.")
+
+            normalized_step = dict(step)
+            normalized_step.setdefault("depends_on", [])
+            normalized_step["parameters"] = parameters
+            normalized_step["depends_on"] = depends_on
+            validated_plan.append(normalized_step)
+
+        return {"plan": validated_plan}
+
+    @staticmethod
     async def create_plan(
         user_query: str,
         history: List[Dict[str, Any]],
         state: Dict[str, Any],
-        max_steps: int = 5
+        max_steps: int = 5,
+        allowed_tools: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
         Create an execution plan for a user query.
@@ -106,22 +165,6 @@ class Planner:
 
         print(">>> Parsed JSON:")
 
-        if not isinstance(plan_json, dict):
-            raise ValueError(
-                f"Planner returned {type(plan_json).__name__}, expected dict."
-            )
-
-        if "plan" not in plan_json:
-            raise ValueError(
-                f"Planner JSON missing 'plan': {plan_json}"
-            )
-
-        if not isinstance(plan_json["plan"], list):
-            raise ValueError(
-                f"'plan' should be a list, got {type(plan_json['plan'])}"
-            )
-
-        for step in plan_json["plan"]:
-            step.setdefault("depends_on", [])
+        plan_json = Planner.validate_plan_payload(plan_json, allowed_tools=allowed_tools)
 
         return plan_json
