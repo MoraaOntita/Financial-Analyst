@@ -7,9 +7,12 @@ from dotenv import load_dotenv
 import httpx
 from fastmcp import Client
 from ai_agent.memory_store import load_conversation, save_message, load_state, save_state
+from ai_agent.tool_chaining.executor import Executor
+from ai_agent.tool_cache import ToolCache
 from ai_agent.llm import call_llm
-from ai_agent.planner import Planner
+from ai_agent.tool_chaining.planner import Planner
 import uuid
+import traceback
 
 # -------------------------------
 # Load environment variables
@@ -73,31 +76,7 @@ tool_mapping = {
     "web_search": web_search_tool
 }
 
-# bring executor and cache here to orchestrate plan execution
-from ai_agent.executor import Executor
-from ai_agent.tool_cache import ToolCache
-
 # call_llm is provided by ai_agent.llm (kept as separate module for reuse)
-            
-# -------------------------------
-# JSON extractor
-# -------------------------------
-def extract_json(text):
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-    if not match:
-        raise ValueError("No JSON found in LLM response")
-    return json.loads(match.group())
-
-# -------------------------------
-# Load reasoning prompt from file
-# -------------------------------
-def load_prompt():
-    prompt_path = os.path.join("ai_agent", "prompts", "reasoning_prompt.txt")
-    with open(prompt_path, "r") as f:
-        return f.read()
-
-REASONING_PROMPT = load_prompt()
-
 
 
 # -------------------------------
@@ -134,153 +113,68 @@ async def agent_loop(
 
     save_message(session_id, "user", user_query)
 
-    # --- Planner: create an initial execution plan (incremental refactor)
+    # --- Planner: create an initial execution plan
     try:
-        plan_doc = await Planner.create_plan(user_query, history, state)
-        print("[Planner] Execution plan:", json.dumps(plan_doc, indent=2))
-    except Exception as e:
-        print(f"[Planner] Failed to create plan: {e}")
+        print("\n>>> Calling Planner.create_plan()")
 
-    # --- Executor: run planned steps deterministically (one-by-one)
+        plan_doc = await Planner.create_plan(user_query, history, state)
+
+        print("\n>>> Planner returned:")
+        print(json.dumps(plan_doc, indent=2))
+
+    except Exception as e:
+        print("\n" + "=" * 80)
+        print("PLANNER FAILED")
+        print("=" * 80)
+
+        traceback.print_exc()
+
+        print("\nException type:", type(e).__name__)
+        print("Exception:", repr(e))
+
+        return {
+            "error": "Planner failed",
+            "details": str(e)
+        }
+
+
+    # --- Executor: run planned steps deterministically
     tool_cache = ToolCache()
     executor = Executor(tool_mapping, tool_cache=tool_cache)
+
     try:
         exec_result = await executor.execute_plan(plan_doc, session_id, state)
         print("[Executor] Completed steps:", json.dumps(exec_result.get("completed_steps", []), indent=2))
     except Exception as e:
         print(f"[Executor] Execution failed: {e}")
+        return {"error": "Executor failed", "details": str(e)}
 
-    for step in range(max_steps):
+    # -------------------------------------------------------
+    # unified result extraction (no ReAct loop anymore)
+    # -------------------------------------------------------
 
-        # inject last_observation
-        last_observation = steps[-1]["observation"] if steps else None
+    completed_steps = exec_result.get("completed_steps", [])
 
-        prompt = f"""
-{REASONING_PROMPT}
+    # Try to find final answer from tool outputs (if any tool provides it)
+    final_answer = None
 
-User question: {user_query}
+    for step in completed_steps:
+        obs = step.get("observation")
 
-Conversation history:
-{json.dumps(history, indent=2)}
+        if isinstance(obs, dict) and "final_answer" in obs:
+            final_answer = obs["final_answer"]
+            break
 
-Agent state:
-{json.dumps(state, indent=2)}
+    # fallback behavior
+    if not final_answer:
+        final_answer = "Execution completed. No explicit final answer was produced."
 
-Tool interaction history:
-{json.dumps(steps, indent=2)}
+    save_message(session_id, "assistant", final_answer)
 
-Latest tool result:
-{json.dumps(last_observation, indent=2) if last_observation else "None"}
-
-IMPORTANT:
-- The "observation" field contains the result of the previous tool call
-- You MUST use ONLY this observation to decide the next step
-- DO NOT use prior knowledge or assumptions
-
-CRITICAL RULE:
-- You MUST ONLY use data returned in tool observations
-- If observation is empty or contains an error, respond with:
-  "No matching records found"
-- Never invent car names, prices, or statistics
-"""
-
-        if user_query.lower() in ["hi", "hello", "morning"]:
-            save_message(session_id, "assistant", "Hello! How can I help you today?")
-            return {"answer": "Hello! How can I help you today?", "steps": []}
-        
-        step_output = None
-        for attempt in range(max_json_attempts):
-            response_text = await call_llm(prompt)
-            await asyncio.sleep(1)
-            try:
-                step_output = extract_json(response_text)
-                break
-            except Exception:
-                prompt += "\n\nREMINDER: Respond ONLY in valid JSON."
-                if attempt == max_json_attempts - 1:
-                    return {"error": "Invalid JSON after multiple attempts", "raw": response_text}
-
-        thought = step_output.get("thought")
-        action = step_output.get("action")
-        parameters = step_output.get("parameters", {})
-
-        print(f"\n[Step {step+1}]")
-        print("Thought:", thought)
-        print("Action:", action)
-        print("Params:", parameters)
-
-        final_answer_text = step_output.get("final_answer", "")
-
-        if action == "final_answer":
-            if not final_answer_text:
-                final_answer_text = "I couldn't compute a final answer based on available data."
-
-            save_message(session_id, "assistant", final_answer_text)
-            return {"answer": final_answer_text, "steps": steps}
-
-        # unwrap 'params' for query/aggregate ---
-        tool_args = parameters
-        if action in ["query", "aggregate"] and "params" in parameters:
-            tool_args = parameters["params"]
-
-        if action not in tool_mapping:
-            return {"error": f"Invalid action: {action}"}
-
-        try:
-            tool_result = await tool_mapping[action](**tool_args)
-        except Exception as e:
-            tool_result = {"error": True, "message": str(e)}
-
-        # debug tool output
-        print("Tool Result:", tool_result)
-
-        tool_result = summarize_result(tool_result)
-
-        # handle tool failure early
-        if isinstance(tool_result, dict) and tool_result.get("error"):
-            print("Tool Error:", tool_result)
-
-            steps.append({
-                "thought": thought,
-                "action": action,
-                "parameters": parameters,
-                "observation": tool_result
-            })
-
-            # pass error as observation
-            last_observation = tool_result
-
-            continue
-
-        steps.append({
-            "thought": thought,
-            "action": action,
-            "parameters": parameters,
-            "observation": tool_result
-        })
-
-        last_observation = steps[-1]["observation"] if steps else None
-
-        if len(steps) >= 2:
-            if (
-                steps[-1]["action"] == steps[-2]["action"]
-                and steps[-1]["parameters"] == steps[-2]["parameters"]
-            ):
-                return {"error": "Detected repeated identical tool call"}
-
-        # save_message(session_id, "assistant", thought)
-
-        # Update structured state
-        state["last_action"] = action
-        state["last_intent"] = thought
-        save_state(session_id, state)
-
-        # if tool produced final answer inside observation, break early ---
-        if isinstance(tool_result, dict) and "final_answer" in tool_result:
-            save_message(session_id, "assistant", tool_result["final_answer"])
-            return {"answer": tool_result["final_answer"], "steps": steps}
-
-    return {"answer": "Max steps reached without final answer.", "steps": steps}
+    return {
+        "answer": final_answer,
+        "steps": completed_steps
+    }
 
 # -------------------------------
 # Terminal interactive loop
