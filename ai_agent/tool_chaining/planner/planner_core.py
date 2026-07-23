@@ -72,6 +72,7 @@ class Planner:
         Raises:
             ValueError: If planner response is invalid JSON or malformed plan
         """
+        print(">>> ENTERED Planner.create_plan")
         prompt = load_prompt() + "\n\n"
         prompt += "You are a planner. Given the user question, conversation history, and agent state, produce a minimal JSON plan. "
         prompt += (
@@ -93,6 +94,8 @@ class Planner:
         prompt += f"Agent state: {json.dumps(state)}\n"
         prompt += f"Max steps: {max_steps}\n"
 
+        print(">>> Calling LLM...")
+
         response_text = await call_llm(prompt)
 
         print("\n=== RAW PLANNER RESPONSE ===")
@@ -100,6 +103,8 @@ class Planner:
         print("============================\n")
 
         plan_json = extract_json(response_text)
+
+        print(">>> Parsed JSON:")
 
         if not isinstance(plan_json, dict):
             raise ValueError(
